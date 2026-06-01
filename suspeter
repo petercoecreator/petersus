@@ -1,0 +1,1841 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+
+-- ============================================
+-- CONFIGURAÇÕES GLOBAIS
+-- ============================================
+local corRosa = Color3.fromRGB(255, 182, 193)
+local corPelo = Color3.new(0, 0, 0)
+local materialLiso = Enum.Material.SmoothPlastic
+
+local numSegmentos = 5
+local comprimentoTotal = 3.0
+local alturaSegmento = comprimentoTotal / numSegmentos
+local larguraCilindro = 0.8
+local densidadePelos = 40
+local larguraPelo = 0.025
+
+-- Tabelas para armazenar dados por jogador
+local jogadoresComPinto = {}
+local jogadoresComBolas = {}
+
+-- Variáveis para as 4 bolas no jogador local (modo mulher)
+local selectedPartsLocal = {}
+local swayConnectionLocal
+
+-- Dados do pinto do jogador local (modo homem)
+local pintoLocal = {
+    segmentos = {},
+    weldsDeRigidez = {},
+    estaRigido = false,
+    partes = {}
+}
+
+-- Referências globais para limpeza
+local guiAtual = nil
+local conexoes = {}
+local modoAtual = nil
+local roupasJogadorLocal = nil
+local humanoidConnection = nil
+
+-- Variáveis para controle do GUI (minimizar/fechar)
+local guiFramePrincipal = nil
+local guiMinimizado = false
+local guiPosicaoOriginal = nil
+local guiTamanhoOriginal = nil
+
+-- ============================================
+-- VARIÁVEIS BANGSCRIPT/BANGIRL
+-- ============================================
+local bangMovimentoAtivo = false
+local bangConexao = nil
+local bangAlvo = nil
+local bangProgresso = 0  -- 0 a 1, sincroniza com vai-e-vem do bang
+
+-- Config Masculino (bangscript - atrás de costas)
+local BANG_M_DISTANCIA_ATRAS = 2.8
+local BANG_M_DISTANCIA_FRENTE = 0.6
+local BANG_M_VELOCIDADE_FRENTE = 4.0
+local BANG_M_VELOCIDADE_TRAS = 2.5
+local BANG_M_AMPLETUDE_VERTICAL = 0.04
+local BANG_M_AMPLETUDE_LATERAL = 0.03
+
+-- Config Feminino (bangirl - na frente de frente)
+local BANG_F_DISTANCIA_FRENTE = 2.8
+local BANG_F_DISTANCIA_PERTO = 0.6
+local BANG_F_VELOCIDADE_FRENTE = 4.0
+local BANG_F_VELOCIDADE_TRAS = 2.5
+local BANG_F_AMPLETUDE_VERTICAL = 0.04
+local BANG_F_AMPLETUDE_LATERAL = 0.03
+
+-- ============================================
+-- FUNÇÃO TWEEN
+-- ============================================
+local function tween(obj, props, duration)
+    TweenService:Create(obj, TweenInfo.new(duration or 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), props):Play()
+end
+
+-- ============================================
+-- FUNÇÕES AUXILIARES
+-- ============================================
+local function getSkinColor(char)
+    local bodyColors = char:FindFirstChildOfClass("BodyColors")
+    if bodyColors then return bodyColors.TorsoColor3 end
+    local torso = char:FindFirstChild("LowerTorso") or char:FindFirstChild("Torso")
+    if torso then return torso.Color end
+    local head = char:FindFirstChild("Head")
+    if head then return head.Color end
+    return Color3.fromRGB(255, 204, 153)
+end
+
+-- ============================================
+-- SISTEMA DE ROUPAS - SALVAR E RESTAURAR
+-- ============================================
+local function salvarRoupas(character)
+    local dados = {}
+    for _, item in pairs(character:GetChildren()) do
+        if item:IsA("Shirt") then
+            dados.Shirt = item.ShirtTemplate
+        elseif item:IsA("Pants") then
+            dados.Pants = item.PantsTemplate
+        elseif item:IsA("ShirtGraphic") then
+            dados.ShirtGraphic = item.Graphic
+        end
+    end
+    return dados
+end
+
+local function removerRoupas(character)
+    for _, item in pairs(character:GetChildren()) do
+        if item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic") then
+            item:Destroy()
+        end
+    end
+end
+
+local function restaurarRoupas(character, dados)
+    if not dados then return end
+    if dados.Shirt then
+        local shirt = Instance.new("Shirt")
+        shirt.ShirtTemplate = dados.Shirt
+        shirt.Parent = character
+    end
+    if dados.Pants then
+        local pants = Instance.new("Pants")
+        pants.PantsTemplate = dados.Pants
+        pants.Parent = character
+    end
+    if dados.ShirtGraphic then
+        local graphic = Instance.new("ShirtGraphic")
+        graphic.Graphic = dados.ShirtGraphic
+        graphic.Parent = character
+    end
+end
+
+-- ============================================
+-- LIMPAR TUDO (DELETE OU MORRER)
+-- ============================================
+local function limparTudo()
+    -- Para bangscript/bangirl
+    pararBang()
+
+    if guiAtual and guiAtual.Parent then
+        guiAtual:Destroy()
+    end
+    guiAtual = nil
+    guiFramePrincipal = nil
+    guiMinimizado = false
+    guiPosicaoOriginal = nil
+    guiTamanhoOriginal = nil
+
+    for _, conn in ipairs(conexoes) do
+        if conn then conn:Disconnect() end
+    end
+    conexoes = {}
+
+    if humanoidConnection then
+        humanoidConnection:Disconnect()
+        humanoidConnection = nil
+    end
+
+    for _, obj in ipairs(pintoLocal.partes) do
+        if obj and obj.Parent then obj:Destroy() end
+    end
+    pintoLocal.segmentos = {}
+    pintoLocal.weldsDeRigidez = {}
+    pintoLocal.estaRigido = false
+    pintoLocal.partes = {}
+
+    if swayConnectionLocal then
+        swayConnectionLocal:Disconnect()
+        swayConnectionLocal = nil
+    end
+    for _, part in ipairs(selectedPartsLocal) do
+        if part and part.Parent then part:Destroy() end
+    end
+    selectedPartsLocal = {}
+
+    -- Restaurar roupas do jogador local
+    if player.Character and roupasJogadorLocal then
+        restaurarRoupas(player.Character, roupasJogadorLocal)
+        roupasJogadorLocal = nil
+    end
+
+    for targetPlayer, dados in pairs(jogadoresComPinto) do
+        for _, obj in ipairs(dados.partes) do
+            if obj and obj.Parent then obj:Destroy() end
+        end
+        if targetPlayer.Character and dados.roupas then
+            restaurarRoupas(targetPlayer.Character, dados.roupas)
+        end
+        if dados.charConnection then
+            dados.charConnection:Disconnect()
+        end
+    end
+    jogadoresComPinto = {}
+
+    for targetPlayer, dados in pairs(jogadoresComBolas) do
+        if dados.swayConnection then
+            dados.swayConnection:Disconnect()
+        end
+        for _, part in ipairs(dados.partes) do
+            if part and part.Parent then part:Destroy() end
+        end
+        if targetPlayer.Character and dados.roupas then
+            restaurarRoupas(targetPlayer.Character, dados.roupas)
+        end
+        if dados.charConnection then
+            dados.charConnection:Disconnect()
+        end
+    end
+    jogadoresComBolas = {}
+
+    modoAtual = nil
+    roupasJogadorLocal = nil
+end
+
+-- ============================================
+-- ADICIONAR PELOS (PINTO)
+-- ============================================
+local function adicionarPelos(parte, ehEsfera, character)
+    for i = 1, densidadePelos do
+        local pelo = Instance.new("Part")
+        pelo.Name = "Pelo"
+        local comprimentoAleatorio = 0.2 + (math.random() * 0.15)
+        pelo.Size = Vector3.new(larguraPelo, comprimentoAleatorio, larguraPelo)
+        pelo.Color = corPelo
+        pelo.Material = materialLiso
+        pelo.CanCollide = false
+        pelo.Parent = character
+
+        local direcao
+        if ehEsfera then
+            local angulo1 = math.rad(math.random(0, 360))
+            local angulo2 = math.rad(math.random(0, 360))
+            direcao = Vector3.new(
+                math.sin(angulo1) * math.cos(angulo2),
+                math.sin(angulo1) * math.sin(angulo2),
+                math.cos(angulo1)
+            )
+            pelo.CFrame = (parte.CFrame * CFrame.new(direcao * (parte.Size.X/2))) * CFrame.lookAt(Vector3.new(0,0,0), direcao) * CFrame.Angles(math.rad(90), 0, 0)
+        else
+            local angulo = math.rad(math.random(0, 360))
+            local posAoLongo = (math.random() - 0.5) * parte.Size.X
+            local raio = parte.Size.Y / 2
+            local localPos = Vector3.new(posAoLongo, math.cos(angulo) * raio, math.sin(angulo) * raio)
+            direcao = (localPos * Vector3.new(0, 1, 1)).Unit
+            pelo.CFrame = parte.CFrame * CFrame.new(localPos) * CFrame.lookAt(Vector3.new(0,0,0), direcao) * CFrame.Angles(math.rad(90), 0, 0)
+        end
+
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0 = parte
+        weld.Part1 = pelo
+        weld.Parent = pelo
+    end
+end
+
+-- ============================================
+-- PINTO NO JOGADOR LOCAL (MODO HOMEM) - SEM COLISÃO
+-- ============================================
+local function setupPintoLocal()
+    local character = player.Character
+    if not character then return end
+    local rootPart = character:WaitForChild("HumanoidRootPart")
+    local skinColor = getSkinColor(character)
+
+    for _, obj in pairs(character:GetChildren()) do
+        if obj.Name == "EsferaFixa" or obj.Name == "ParteFlexivel" or obj.Name == "PontaRedonda" or obj.Name == "Pelo" then
+            obj:Destroy()
+        end
+    end
+
+    pintoLocal.segmentos = {}
+    pintoLocal.weldsDeRigidez = {}
+    pintoLocal.partes = {}
+
+    local function criarEsferaBase(nome, offset)
+        local esfera = Instance.new("Part")
+        esfera.Name = "EsferaFixa"
+        esfera.Shape = Enum.PartType.Ball
+        esfera.Size = Vector3.new(1.1, 1.1, 1.1)
+        esfera.Color = skinColor
+        esfera.Material = materialLiso
+        esfera.CanCollide = false
+        esfera.Parent = character
+        esfera.CFrame = rootPart.CFrame * offset
+
+        local weld = Instance.new("WeldConstraint")
+        weld.Part0 = rootPart
+        weld.Part1 = esfera
+        weld.Parent = esfera
+
+        adicionarPelos(esfera, true, character)
+        table.insert(pintoLocal.partes, esfera)
+        return esfera
+    end
+
+    criarEsferaBase("E_Esq", CFrame.new(-0.55, -1.1, -0.6))
+    criarEsferaBase("E_Dir", CFrame.new(0.55, -1.1, -0.6))
+
+    local ultimoAncoradouro = rootPart
+    local posicaoAncoragem = Vector3.new(0, -1.1, -0.7)
+
+    for i = 1, numSegmentos do
+        local segmento = Instance.new("Part")
+        segmento.Name = "ParteFlexivel"
+        segmento.Shape = Enum.PartType.Cylinder
+        segmento.Size = Vector3.new(alturaSegmento, larguraCilindro, larguraCilindro)
+        segmento.Material = materialLiso
+        segmento.Color = skinColor
+        if i < numSegmentos then adicionarPelos(segmento, false, character) end
+        segmento.CanCollide = false
+        segmento.Parent = character
+        segmento.CFrame = rootPart.CFrame * CFrame.new(0, -1.1, -0.7 - (i * alturaSegmento)) * CFrame.Angles(0, math.rad(90), 0)
+
+        local att0 = Instance.new("Attachment")
+        att0.Parent = ultimoAncoradouro
+        att0.Position = (ultimoAncoradouro == rootPart) and posicaoAncoragem or Vector3.new(alturaSegmento/2, 0, 0)
+
+        local att1 = Instance.new("Attachment")
+        att1.Parent = segmento
+        att1.Position = Vector3.new(-alturaSegmento/2, 0, 0)
+
+        local socket = Instance.new("BallSocketConstraint")
+        socket.Attachment0 = att0
+        socket.Attachment1 = att1
+        socket.Parent = segmento
+        socket.LimitsEnabled = true
+        socket.UpperAngle = 20
+
+        table.insert(pintoLocal.segmentos, segmento)
+        table.insert(pintoLocal.partes, segmento)
+        ultimoAncoradouro = segmento
+    end
+
+    local ultimoSeg = pintoLocal.segmentos[#pintoLocal.segmentos]
+    local ponta = Instance.new("Part")
+    ponta.Name = "PontaRedonda"
+    ponta.Shape = Enum.PartType.Ball
+    ponta.Size = Vector3.new(larguraCilindro, larguraCilindro, larguraCilindro)
+    ponta.Color = corRosa
+    ponta.Material = materialLiso
+    ponta.CanCollide = false
+    ponta.Parent = character
+    ponta.CFrame = ultimoSeg.CFrame * CFrame.new(alturaSegmento/2, 0, 0)
+
+    local weldPonta = Instance.new("WeldConstraint")
+    weldPonta.Part0 = ultimoSeg
+    weldPonta.Part1 = ponta
+    weldPonta.Parent = ponta
+    table.insert(pintoLocal.partes, ponta)
+end
+
+-- ============================================
+-- APLICAR 4 BOLAS ANIMADAS NO JOGADOR ALVO (MODO HOMEM)
+-- ============================================
+local function aplicarBolasNoJogador(targetPlayer)
+    if jogadoresComBolas[targetPlayer] then
+        local dadosAntigos = jogadoresComBolas[targetPlayer]
+        if dadosAntigos.swayConnection then
+            dadosAntigos.swayConnection:Disconnect()
+        end
+        for _, part in ipairs(dadosAntigos.partes) do
+            if part and part.Parent then part:Destroy() end
+        end
+        if dadosAntigos.charConnection then
+            dadosAntigos.charConnection:Disconnect()
+        end
+        if targetPlayer.Character and dadosAntigos.roupas then
+            restaurarRoupas(targetPlayer.Character, dadosAntigos.roupas)
+        end
+        jogadoresComBolas[targetPlayer] = nil
+    end
+
+    local dados = {
+        partes = {},
+        swayConnection = nil,
+        charConnection = nil,
+        roupas = nil
+    }
+
+    local function clearParts()
+        if dados.swayConnection then
+            dados.swayConnection:Disconnect()
+            dados.swayConnection = nil
+        end
+        for _, part in ipairs(dados.partes) do
+            if part and part.Parent then part:Destroy() end
+        end
+        dados.partes = {}
+    end
+
+    local function createPart(size, color, parent)
+        local part = Instance.new("Part")
+        part.Shape = Enum.PartType.Ball
+        part.Size = size
+        part.Color = color
+        part.Material = Enum.Material.SmoothPlastic
+        part.CanCollide = false
+        part.Anchored = true
+        part.Parent = parent
+        table.insert(dados.partes, part)
+        return part
+    end
+
+    local function addPartsToTarget()
+        clearParts()
+        local char = targetPlayer.Character
+        if not char then return end
+        local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not torso then return end
+
+        local skinColor = getSkinColor(char)
+        local pink = Color3.fromRGB(255, 170, 190)
+
+        local frontLeft = createPart(Vector3.new(1.6, 1.6, 1.6), skinColor, workspace)
+        local frontRight = createPart(Vector3.new(1.6, 1.6, 1.6), skinColor, workspace)
+        local pinkLeft = createPart(Vector3.new(0.35, 0.35, 0.35), pink, workspace)
+        local pinkRight = createPart(Vector3.new(0.35, 0.35, 0.35), pink, workspace)
+        local backLeft = createPart(Vector3.new(1.4, 1.4, 1.4), skinColor, workspace)
+        local backRight = createPart(Vector3.new(1.4, 1.4, 1.4), skinColor, workspace)
+
+        local t = 0
+
+        dados.swayConnection = RunService.RenderStepped:Connect(function(dt)
+            if not char.Parent then return end
+            t += dt
+            local moving = hum and hum.MoveDirection.Magnitude > 0.1
+            local speed = moving and 10 or 4
+            local amount = moving and 0.18 or 0.05
+            local bounce = moving and 0.08 or 0.02
+
+            -- Balanço sincronizado com o vai-e-vem do Bang no jogador local
+            local bangSway = 0
+            local bangUp = 0
+            local bangRot = 0
+            if bangMovimentoAtivo then
+                local pulso = math.sin(bangProgresso * math.pi)
+                local intenso = 1 - math.abs(bangProgresso - 0.5) * 2
+
+                bangSway = math.sin(t * 3) * 0.08 * intenso
+                bangUp = pulso * 0.22
+                bangRot = pulso * 18
+            end
+
+            local sway = math.sin(t * speed) * amount + bangSway
+            local up = math.abs(math.cos(t * speed * 0.7)) * bounce + bangUp
+
+            frontLeft.CFrame = torso.CFrame * CFrame.new(-0.6 + sway, 0.2 - up, -0.9) * CFrame.Angles(0, 0, math.rad(sway * 40 + bangRot))
+            frontRight.CFrame = torso.CFrame * CFrame.new(0.6 - sway, 0.2 - up, -0.9) * CFrame.Angles(0, 0, math.rad(-sway * 40 - bangRot))
+            pinkLeft.CFrame = frontLeft.CFrame * CFrame.new(0, 0, -0.75)
+            pinkRight.CFrame = frontRight.CFrame * CFrame.new(0, 0, -0.75)
+            backLeft.CFrame = torso.CFrame * CFrame.new(-0.45, -0.85 + sway * 0.2, 0.7)
+            backRight.CFrame = torso.CFrame * CFrame.new(0.45, -0.85 - sway * 0.2, 0.7)
+        end)
+    end
+
+    if targetPlayer.Character then
+        dados.roupas = salvarRoupas(targetPlayer.Character)
+        removerRoupas(targetPlayer.Character)
+        addPartsToTarget()
+    end
+
+    dados.charConnection = targetPlayer.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        dados.roupas = salvarRoupas(targetPlayer.Character)
+        removerRoupas(targetPlayer.Character)
+        addPartsToTarget()
+    end)
+
+    jogadoresComBolas[targetPlayer] = dados
+end
+
+local function removerBolasERestaurarRoupas(targetPlayer)
+    if not jogadoresComBolas[targetPlayer] then return end
+    local dados = jogadoresComBolas[targetPlayer]
+    if dados.swayConnection then
+        dados.swayConnection:Disconnect()
+    end
+    for _, part in ipairs(dados.partes) do
+        if part and part.Parent then part:Destroy() end
+    end
+    if targetPlayer.Character and dados.roupas then
+        restaurarRoupas(targetPlayer.Character, dados.roupas)
+    end
+    if dados.charConnection then
+        dados.charConnection:Disconnect()
+    end
+    jogadoresComBolas[targetPlayer] = nil
+end
+
+-- ============================================
+-- APLICAR PINTO DURO EM JOGADOR ALVO (MODO MULHER) - SEM COLISÃO
+-- ============================================
+local function aplicarPintoDuroNoJogador(targetPlayer)
+    if jogadoresComPinto[targetPlayer] then
+        local dadosAntigos = jogadoresComPinto[targetPlayer]
+        for _, obj in ipairs(dadosAntigos.partes) do
+            if obj and obj.Parent then obj:Destroy() end
+        end
+        if targetPlayer.Character and dadosAntigos.roupas then
+            restaurarRoupas(targetPlayer.Character, dadosAntigos.roupas)
+        end
+        if dadosAntigos.charConnection then
+            dadosAntigos.charConnection:Disconnect()
+        end
+        jogadoresComPinto[targetPlayer] = nil
+    end
+
+    local dados = {
+        segmentos = {},
+        partes = {},
+        roupas = nil
+    }
+
+    local function setupCilindroDuro()
+        local character = targetPlayer.Character
+        if not character then return end
+        local rootPart = character:WaitForChild("HumanoidRootPart")
+        local skinColor = getSkinColor(character)
+
+        for _, obj in pairs(character:GetChildren()) do
+            if obj.Name == "EsferaFixa" or obj.Name == "ParteFlexivel" or obj.Name == "PontaRedonda" or obj.Name == "Pelo" then
+                obj:Destroy()
+            end
+        end
+
+        dados.segmentos = {}
+        dados.partes = {}
+
+        local function criarEsferaBase(nome, offset)
+            local esfera = Instance.new("Part")
+            esfera.Name = "EsferaFixa"
+            esfera.Shape = Enum.PartType.Ball
+            esfera.Size = Vector3.new(1.1, 1.1, 1.1)
+            esfera.Color = skinColor
+            esfera.Material = materialLiso
+            esfera.CanCollide = false
+            esfera.Parent = character
+            esfera.CFrame = rootPart.CFrame * offset
+
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = rootPart
+            weld.Part1 = esfera
+            weld.Parent = esfera
+
+            table.insert(dados.partes, esfera)
+            return esfera
+        end
+
+        criarEsferaBase("E_Esq", CFrame.new(-0.55, -1.1, -0.6))
+        criarEsferaBase("E_Dir", CFrame.new(0.55, -1.1, -0.6))
+
+        local ultimoPai = rootPart
+        for i = 1, numSegmentos do
+            local segmento = Instance.new("Part")
+            segmento.Name = "ParteFlexivel"
+            segmento.Shape = Enum.PartType.Cylinder
+            segmento.Size = Vector3.new(alturaSegmento, larguraCilindro, larguraCilindro)
+            segmento.Material = materialLiso
+            segmento.Color = skinColor
+            segmento.CanCollide = false
+            segmento.Parent = character
+
+            local offsetZ = -0.7 - (i * alturaSegmento)
+            segmento.CFrame = rootPart.CFrame * CFrame.new(0, -1.1, offsetZ) * CFrame.Angles(0, math.rad(90), 0)
+
+            local w = Instance.new("WeldConstraint")
+            w.Part0 = ultimoPai
+            w.Part1 = segmento
+            w.Parent = segmento
+
+            table.insert(dados.segmentos, segmento)
+            table.insert(dados.partes, segmento)
+            ultimoPai = segmento
+        end
+
+        local ultimoSeg = dados.segmentos[#dados.segmentos]
+        local ponta = Instance.new("Part")
+        ponta.Name = "PontaRedonda"
+        ponta.Shape = Enum.PartType.Ball
+        ponta.Size = Vector3.new(larguraCilindro, larguraCilindro, larguraCilindro)
+        ponta.Color = corRosa
+        ponta.Material = materialLiso
+        ponta.CanCollide = false
+        ponta.Parent = character
+        ponta.CFrame = ultimoSeg.CFrame * CFrame.new(alturaSegmento/2, 0, 0)
+
+        local weldPonta = Instance.new("WeldConstraint")
+        weldPonta.Part0 = ultimoSeg
+        weldPonta.Part1 = ponta
+        weldPonta.Parent = ponta
+        table.insert(dados.partes, ponta)
+    end
+
+    if targetPlayer.Character then
+        dados.roupas = salvarRoupas(targetPlayer.Character)
+        removerRoupas(targetPlayer.Character)
+        setupCilindroDuro()
+    end
+
+    dados.charConnection = targetPlayer.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        dados.roupas = salvarRoupas(targetPlayer.Character)
+        removerRoupas(targetPlayer.Character)
+        setupCilindroDuro()
+    end)
+
+    jogadoresComPinto[targetPlayer] = dados
+end
+
+local function removerPintoERestaurarRoupas(targetPlayer)
+    if not jogadoresComPinto[targetPlayer] then return end
+    local dados = jogadoresComPinto[targetPlayer]
+    for _, obj in ipairs(dados.partes) do
+        if obj and obj.Parent then obj:Destroy() end
+    end
+    if targetPlayer.Character and dados.roupas then
+        restaurarRoupas(targetPlayer.Character, dados.roupas)
+    end
+    if dados.charConnection then
+        dados.charConnection:Disconnect()
+    end
+    jogadoresComPinto[targetPlayer] = nil
+end
+
+-- ============================================
+-- 4 BOLAS ANIMADAS NO JOGADOR LOCAL (MODO MULHER)
+-- ============================================
+local function iniciarBolasAnimadasLocal()
+    local function clearParts()
+        if swayConnectionLocal then
+            swayConnectionLocal:Disconnect()
+            swayConnectionLocal = nil
+        end
+        for _, part in ipairs(selectedPartsLocal) do
+            if part and part.Parent then part:Destroy() end
+        end
+        selectedPartsLocal = {}
+    end
+
+    local function createPart(size, color, parent)
+        local part = Instance.new("Part")
+        part.Shape = Enum.PartType.Ball
+        part.Size = size
+        part.Color = color
+        part.Material = Enum.Material.SmoothPlastic
+        part.CanCollide = false
+        part.Anchored = true
+        part.Parent = parent
+        table.insert(selectedPartsLocal, part)
+        return part
+    end
+
+    local function addPartsToSelf()
+        clearParts()
+        local char = player.Character
+        if not char then return end
+        local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not torso then return end
+
+        local skinColor = getSkinColor(char)
+        local pink = Color3.fromRGB(255, 170, 190)
+
+        local frontLeft = createPart(Vector3.new(1.6, 1.6, 1.6), skinColor, workspace)
+        local frontRight = createPart(Vector3.new(1.6, 1.6, 1.6), skinColor, workspace)
+        local pinkLeft = createPart(Vector3.new(0.35, 0.35, 0.35), pink, workspace)
+        local pinkRight = createPart(Vector3.new(0.35, 0.35, 0.35), pink, workspace)
+        local backLeft = createPart(Vector3.new(1.4, 1.4, 1.4), skinColor, workspace)
+        local backRight = createPart(Vector3.new(1.4, 1.4, 1.4), skinColor, workspace)
+
+        local t = 0
+
+        swayConnectionLocal = RunService.RenderStepped:Connect(function(dt)
+            if not char.Parent then return end
+            t += dt
+            local moving = hum and hum.MoveDirection.Magnitude > 0.1
+            local speed = moving and 10 or 4
+            local amount = moving and 0.18 or 0.05
+            local bounce = moving and 0.08 or 0.02
+
+            -- Balanço sincronizado com o vai-e-vem do Bang
+            local bangSway = 0
+            local bangUp = 0
+            local bangRot = 0
+            if bangMovimentoAtivo then
+                -- bangProgresso: 0 = longe, 0.5 = meio, 1 = perto
+                -- O peito balança para frente quando vai (progresso aumenta) e volta quando recua
+                local pulso = math.sin(bangProgresso * math.pi)  -- 0 → 1 → 0
+                local intenso = 1 - math.abs(bangProgresso - 0.5) * 2  -- máximo no meio
+
+                bangSway = math.sin(t * 3) * 0.08 * intenso  -- leve balanço lateral natural
+                bangUp = pulso * 0.22  -- sobe/desce com o vai-e-vem
+                bangRot = pulso * 18   -- inclina com o movimento
+            end
+
+            local sway = math.sin(t * speed) * amount + bangSway
+            local up = math.abs(math.cos(t * speed * 0.7)) * bounce + bangUp
+
+            frontLeft.CFrame = torso.CFrame * CFrame.new(-0.6 + sway, 0.2 - up, -0.9) * CFrame.Angles(0, 0, math.rad(sway * 40 + bangRot))
+            frontRight.CFrame = torso.CFrame * CFrame.new(0.6 - sway, 0.2 - up, -0.9) * CFrame.Angles(0, 0, math.rad(-sway * 40 - bangRot))
+            pinkLeft.CFrame = frontLeft.CFrame * CFrame.new(0, 0, -0.75)
+            pinkRight.CFrame = frontRight.CFrame * CFrame.new(0, 0, -0.75)
+            backLeft.CFrame = torso.CFrame * CFrame.new(-0.45, -0.85 + sway * 0.2, 0.7)
+            backRight.CFrame = torso.CFrame * CFrame.new(0.45, -0.85 - sway * 0.2, 0.7)
+        end)
+    end
+
+    if player.Character then addPartsToSelf() end
+    player.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        addPartsToSelf()
+    end)
+end
+
+-- ============================================
+-- BANGSCRIPT/BANGIRL INTEGRADOS
+-- ============================================
+local function getJogadorMaisProximoBang()
+    local meuChar = player.Character
+    if not meuChar then return nil end
+    local meuRoot = meuChar:FindFirstChild("HumanoidRootPart")
+    if not meuRoot then return nil end
+
+    local maisProximo = nil
+    local menorDistancia = 50
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local dist = (meuRoot.Position - root.Position).Magnitude
+                if dist < menorDistancia then
+                    menorDistancia = dist
+                    maisProximo = plr
+                end
+            end
+        end
+    end
+
+    return maisProximo
+end
+
+local function congelarAnimacao(character, congelar)
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        if congelar then
+            humanoid.AutoRotate = false
+        else
+            humanoid.AutoRotate = true
+        end
+    end
+    local animate = character:FindFirstChild("Animate")
+    if animate and animate:IsA("LocalScript") then
+        animate.Enabled = not congelar
+    end
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            if congelar then
+                track:AdjustSpeed(0)
+            else
+                track:AdjustSpeed(1)
+            end
+        end
+    end
+end
+
+local function pararBang()
+    bangMovimentoAtivo = false
+    bangAlvo = nil
+    bangProgresso = 0
+    if bangConexao then
+        bangConexao:Disconnect()
+        bangConexao = nil
+    end
+    -- Restaurar animação do personagem
+    local char = player.Character
+    if char then
+        congelarAnimacao(char, false)
+    end
+end
+
+-- BANGSCRIPT MASCULINO (atrás, de costas)
+local function iniciarBangMasculino()
+    bangAlvo = getJogadorMaisProximoBang()
+    if not bangAlvo then
+        warn("Nenhum jogador próximo para bang!")
+        return
+    end
+
+    -- Congelar animação do personagem
+    local char = player.Character
+    if char then
+        congelarAnimacao(char, true)
+    end
+
+    bangMovimentoAtivo = true
+    local estadoFrente = true
+    local progresso = 0
+    local posicaoAtual = nil
+
+    bangConexao = RunService.RenderStepped:Connect(function(dt)
+        if not bangAlvo or not bangAlvo.Character then
+            pararBang()
+            return
+        end
+
+        local meuChar = player.Character
+        if not meuChar then
+            pararBang()
+            return
+        end
+
+        local meuRoot = meuChar:FindFirstChild("HumanoidRootPart")
+        local alvoRoot = bangAlvo.Character:FindFirstChild("HumanoidRootPart")
+
+        if not meuRoot or not alvoRoot then
+            pararBang()
+            return
+        end
+
+        local posAtras = alvoRoot.CFrame * CFrame.new(0, 0, BANG_M_DISTANCIA_ATRAS)
+        local posFrente = alvoRoot.CFrame * CFrame.new(0, 0, BANG_M_DISTANCIA_FRENTE)
+
+        if not posicaoAtual then
+            posicaoAtual = posAtras.Position
+        end
+
+        local velocidade = estadoFrente and BANG_M_VELOCIDADE_FRENTE or BANG_M_VELOCIDADE_TRAS
+        progresso += dt * velocidade
+
+        if progresso >= 1 then
+            progresso = 0
+            estadoFrente = not estadoFrente
+            posicaoAtual = estadoFrente and posAtras.Position or posFrente.Position
+        end
+
+        local t = progresso
+        local suave = t * t * (3 - 2 * t)
+
+        -- EXPOR progresso para sincronização
+        bangProgresso = suave
+
+        local destino = estadoFrente and posFrente.Position or posAtras.Position
+        local origem = estadoFrente and posAtras.Position or posFrente.Position
+
+        posicaoAtual = origem:Lerp(destino, suave)
+
+        local intenso = 1 - math.abs(suave - 0.5) * 2
+        local balancoY = math.sin(tick() * 8) * BANG_M_AMPLETUDE_VERTICAL * intenso
+        local balancoX = math.cos(tick() * 6) * BANG_M_AMPLETUDE_LATERAL * intenso
+
+        local posFinal = posicaoAtual + Vector3.new(balancoX, balancoY, 0)
+
+        -- DE COSTAS PARA O ALVO
+        local direcao = alvoRoot.Position - posFinal
+        local anguloY = math.atan2(direcao.X, direcao.Z) + math.pi
+
+        local inclinacao = (estadoFrente and 0.08 or -0.05) * intenso
+
+        meuRoot.CFrame = CFrame.new(posFinal) * CFrame.Angles(inclinacao, anguloY, 0)
+    end)
+end
+
+-- BANGIRL FEMININO (na frente, de frente)
+local function iniciarBangFeminino()
+    bangAlvo = getJogadorMaisProximoBang()
+    if not bangAlvo then
+        warn("Nenhum jogador próximo para bang!")
+        return
+    end
+
+    -- Congelar animação do personagem
+    local char = player.Character
+    if char then
+        congelarAnimacao(char, true)
+    end
+
+    bangMovimentoAtivo = true
+    local estadoFrente = true
+    local progresso = 0
+    local posicaoAtual = nil
+
+    bangConexao = RunService.RenderStepped:Connect(function(dt)
+        if not bangAlvo or not bangAlvo.Character then
+            pararBang()
+            return
+        end
+
+        local meuChar = player.Character
+        if not meuChar then
+            pararBang()
+            return
+        end
+
+        local meuRoot = meuChar:FindFirstChild("HumanoidRootPart")
+        local alvoRoot = bangAlvo.Character:FindFirstChild("HumanoidRootPart")
+
+        if not meuRoot or not alvoRoot then
+            pararBang()
+            return
+        end
+
+        local posLonge = alvoRoot.CFrame * CFrame.new(0, 0, -BANG_F_DISTANCIA_FRENTE)
+        local posPerto = alvoRoot.CFrame * CFrame.new(0, 0, -BANG_F_DISTANCIA_PERTO)
+
+        if not posicaoAtual then
+            posicaoAtual = posLonge.Position
+        end
+
+        local velocidade = estadoFrente and BANG_F_VELOCIDADE_FRENTE or BANG_F_VELOCIDADE_TRAS
+        progresso += dt * velocidade
+
+        if progresso >= 1 then
+            progresso = 0
+            estadoFrente = not estadoFrente
+            posicaoAtual = estadoFrente and posLonge.Position or posPerto.Position
+        end
+
+        local t = progresso
+        local suave = t * t * (3 - 2 * t)
+
+        -- EXPOR progresso para sincronização dos peitos
+        bangProgresso = suave
+
+        local destino = estadoFrente and posPerto.Position or posLonge.Position
+        local origem = estadoFrente and posLonge.Position or posPerto.Position
+
+        posicaoAtual = origem:Lerp(destino, suave)
+
+        local intenso = 1 - math.abs(suave - 0.5) * 2
+        local balancoY = math.sin(tick() * 8) * BANG_F_AMPLETUDE_VERTICAL * intenso
+        local balancoX = math.cos(tick() * 6) * BANG_F_AMPLETUDE_LATERAL * intenso
+
+        local posFinal = posicaoAtual + Vector3.new(balancoX, balancoY, 0)
+
+        -- DE FRENTE PARA O ALVO
+        local direcao = alvoRoot.Position - posFinal
+        local anguloY = math.atan2(direcao.X, direcao.Z)
+
+        local inclinacao = (estadoFrente and -0.08 or 0.05) * intenso
+
+        meuRoot.CFrame = CFrame.new(posFinal) * CFrame.Angles(inclinacao, anguloY, 0)
+    end)
+end
+
+-- ============================================
+-- GUI DE SELEÇÃO INICIAL
+-- ============================================
+local selectorGui = Instance.new("ScreenGui")
+selectorGui.Name = "GenderSelector"
+selectorGui.ResetOnSpawn = false
+selectorGui.Parent = player:WaitForChild("PlayerGui")
+
+local blur = Instance.new("Frame")
+blur.Name = "Blur"
+blur.Size = UDim2.new(1, 0, 1, 0)
+blur.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+blur.BackgroundTransparency = 0.5
+blur.Parent = selectorGui
+
+local container = Instance.new("Frame")
+container.Name = "Container"
+container.Size = UDim2.new(0, 400, 0, 250)
+container.Position = UDim2.new(0.5, -200, 0.5, -125)
+container.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+container.BorderSizePixel = 0
+container.Parent = selectorGui
+
+local containerCorner = Instance.new("UICorner")
+containerCorner.CornerRadius = UDim.new(0, 16)
+containerCorner.Parent = container
+
+local containerStroke = Instance.new("UIStroke")
+containerStroke.Color = Color3.fromRGB(80, 80, 100)
+containerStroke.Thickness = 2
+containerStroke.Parent = container
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Size = UDim2.new(1, 0, 0, 50)
+title.Position = UDim2.new(0, 0, 0, 10)
+title.BackgroundTransparency = 1
+title.Text = "Selecione o Gênero"
+title.TextColor3 = Color3.fromRGB(230, 230, 230)
+title.TextSize = 28
+title.Font = Enum.Font.GothamBold
+title.Parent = container
+
+local subtitle = Instance.new("TextLabel")
+subtitle.Name = "Subtitle"
+subtitle.Size = UDim2.new(1, 0, 0, 30)
+subtitle.Position = UDim2.new(0, 0, 0, 55)
+subtitle.BackgroundTransparency = 1
+subtitle.Text = "Escolha uma opção para carregar o script"
+subtitle.TextColor3 = Color3.fromRGB(150, 150, 160)
+subtitle.TextSize = 14
+subtitle.Font = Enum.Font.Gotham
+subtitle.Parent = container
+
+-- Botão Homem
+local btnHomem = Instance.new("TextButton")
+btnHomem.Name = "BtnHomem"
+btnHomem.Size = UDim2.new(0, 160, 0, 120)
+btnHomem.Position = UDim2.new(0, 25, 0, 100)
+btnHomem.BackgroundColor3 = Color3.fromRGB(45, 85, 145)
+btnHomem.Text = "👨\nHOMEM"
+btnHomem.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnHomem.TextSize = 20
+btnHomem.Font = Enum.Font.GothamBold
+btnHomem.TextWrapped = true
+btnHomem.AutoButtonColor = false
+btnHomem.Parent = container
+
+local homemCorner = Instance.new("UICorner")
+homemCorner.CornerRadius = UDim.new(0, 12)
+homemCorner.Parent = btnHomem
+
+local homemStroke = Instance.new("UIStroke")
+homemStroke.Color = Color3.fromRGB(70, 120, 190)
+homemStroke.Thickness = 2
+homemStroke.Parent = btnHomem
+
+-- Botão Mulher
+local btnMulher = Instance.new("TextButton")
+btnMulher.Name = "BtnMulher"
+btnMulher.Size = UDim2.new(0, 160, 0, 120)
+btnMulher.Position = UDim2.new(1, -185, 0, 100)
+btnMulher.BackgroundColor3 = Color3.fromRGB(180, 60, 120)
+btnMulher.Text = "👩\nMULHER"
+btnMulher.TextColor3 = Color3.fromRGB(255, 255, 255)
+btnMulher.TextSize = 20
+btnMulher.Font = Enum.Font.GothamBold
+btnMulher.TextWrapped = true
+btnMulher.AutoButtonColor = false
+btnMulher.Parent = container
+
+local mulherCorner = Instance.new("UICorner")
+mulherCorner.CornerRadius = UDim.new(0, 12)
+mulherCorner.Parent = btnMulher
+
+local mulherStroke = Instance.new("UIStroke")
+mulherStroke.Color = Color3.fromRGB(220, 90, 150)
+mulherStroke.Thickness = 2
+mulherStroke.Parent = btnMulher
+
+-- Hover effects
+btnHomem.MouseEnter:Connect(function()
+    tween(btnHomem, {BackgroundColor3 = Color3.fromRGB(55, 105, 175), Size = UDim2.new(0, 165, 0, 125)}, 0.15)
+    btnHomem.Position = UDim2.new(0, 22, 0, 97)
+end)
+btnHomem.MouseLeave:Connect(function()
+    tween(btnHomem, {BackgroundColor3 = Color3.fromRGB(45, 85, 145), Size = UDim2.new(0, 160, 0, 120)}, 0.15)
+    btnHomem.Position = UDim2.new(0, 25, 0, 100)
+end)
+
+btnMulher.MouseEnter:Connect(function()
+    tween(btnMulher, {BackgroundColor3 = Color3.fromRGB(200, 75, 140), Size = UDim2.new(0, 165, 0, 125)}, 0.15)
+    btnMulher.Position = UDim2.new(1, -188, 0, 97)
+end)
+btnMulher.MouseLeave:Connect(function()
+    tween(btnMulher, {BackgroundColor3 = Color3.fromRGB(180, 60, 120), Size = UDim2.new(0, 160, 0, 120)}, 0.15)
+    btnMulher.Position = UDim2.new(1, -185, 0, 100)
+end)
+
+-- ============================================
+-- CRIAR GUI DE SELEÇÃO DE JOGADORES (REUTILIZÁVEL) - VISUAL MODERNO
+-- ============================================
+local function criarPlayerSelectGUI(titulo, modo)
+    local playerGui = Instance.new("ScreenGui")
+    playerGui.Name = "PlayerSelectGUI"
+    playerGui.ResetOnSpawn = false
+    playerGui.Parent = player:WaitForChild("PlayerGui")
+    guiAtual = playerGui
+
+    -- Frame principal com glassmorphism
+    local frame = Instance.new("Frame")
+    frame.Name = "MainFrame"
+    frame.Size = UDim2.new(0, 300, 0, 420)
+    frame.Position = UDim2.new(0.5, -150, 0.5, -210)
+    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    frame.BackgroundTransparency = 0.05
+    frame.BorderSizePixel = 0
+    frame.Parent = playerGui
+    guiFramePrincipal = frame
+    guiTamanhoOriginal = frame.Size
+    guiPosicaoOriginal = frame.Position
+
+    -- Gradiente de fundo
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(25, 25, 35)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(15, 15, 22))
+    })
+    gradient.Rotation = 135
+    gradient.Parent = frame
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 16)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(255, 170, 190)
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.6
+    stroke.Parent = frame
+
+    -- Glow effect
+    local glow = Instance.new("ImageLabel")
+    glow.Name = "Glow"
+    glow.Size = UDim2.new(1, 40, 1, 40)
+    glow.Position = UDim2.new(0, -20, 0, -20)
+    glow.BackgroundTransparency = 1
+    glow.Image = "rbxassetid://131604521"
+    glow.ImageColor3 = Color3.fromRGB(255, 170, 190)
+    glow.ImageTransparency = 0.85
+    glow.ScaleType = Enum.ScaleType.Slice
+    glow.SliceCenter = Rect.new(10, 10, 118, 118)
+    glow.Parent = frame
+
+    -- Barra de título moderna
+    local titleBar = Instance.new("Frame")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 44)
+    titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    titleBar.BackgroundTransparency = 0.3
+    titleBar.BorderSizePixel = 0
+    titleBar.Parent = frame
+
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 16)
+    titleCorner.Parent = titleBar
+
+    local fixCorner = Instance.new("Frame")
+    fixCorner.Size = UDim2.new(1, 0, 0, 16)
+    fixCorner.Position = UDim2.new(0, 0, 1, -16)
+    fixCorner.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    fixCorner.BackgroundTransparency = 0.3
+    fixCorner.BorderSizePixel = 0
+    fixCorner.Parent = titleBar
+
+    -- Ícone decorativo
+    local icon = Instance.new("TextLabel")
+    icon.Size = UDim2.new(0, 32, 0, 32)
+    icon.Position = UDim2.new(0, 10, 0.5, -16)
+    icon.BackgroundTransparency = 1
+    icon.Text = modo == "homem" and "🍒" or "🍆"
+    icon.TextSize = 22
+    icon.TextColor3 = Color3.fromRGB(255, 170, 190)
+    icon.Parent = titleBar
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(1, -120, 1, 0)
+    titleLabel.Position = UDim2.new(0, 44, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = titulo
+    titleLabel.TextColor3 = Color3.fromRGB(240, 240, 250)
+    titleLabel.TextSize = 16
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    titleLabel.Parent = titleBar
+
+    -- CONTAINER DE BOTÕES (Minimizar & Fechar)
+    local btnContainer = Instance.new("Frame")
+    btnContainer.Name = "BtnContainer"
+    btnContainer.Size = UDim2.new(0, 64, 0, 28)
+    btnContainer.Position = UDim2.new(1, -72, 0.5, -14)
+    btnContainer.BackgroundTransparency = 1
+    btnContainer.Parent = titleBar
+
+    -- Botão Minimizar
+    local minBtn = Instance.new("TextButton")
+    minBtn.Name = "MinBtn"
+    minBtn.Size = UDim2.new(0, 28, 0, 28)
+    minBtn.Position = UDim2.new(0, 0, 0, 0)
+    minBtn.BackgroundColor3 = Color3.fromRGB(255, 190, 60)
+    minBtn.Text = "−"
+    minBtn.TextColor3 = Color3.fromRGB(40, 30, 10)
+    minBtn.TextSize = 18
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.AutoButtonColor = false
+    minBtn.Parent = btnContainer
+
+    local minCorner = Instance.new("UICorner")
+    minCorner.CornerRadius = UDim.new(0, 8)
+    minCorner.Parent = minBtn
+
+    minBtn.MouseEnter:Connect(function()
+        tween(minBtn, {BackgroundColor3 = Color3.fromRGB(255, 210, 80)}, 0.15)
+    end)
+    minBtn.MouseLeave:Connect(function()
+        tween(minBtn, {BackgroundColor3 = Color3.fromRGB(255, 190, 60)}, 0.15)
+    end)
+
+    -- Botão Fechar
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Name = "CloseBtn"
+    closeBtn.Size = UDim2.new(0, 28, 0, 28)
+    closeBtn.Position = UDim2.new(0, 36, 0, 0)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.TextSize = 13
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.AutoButtonColor = false
+    closeBtn.Parent = btnContainer
+
+    local closeCorner = Instance.new("UICorner")
+    closeCorner.CornerRadius = UDim.new(0, 8)
+    closeCorner.Parent = closeBtn
+
+    closeBtn.MouseEnter:Connect(function()
+        tween(closeBtn, {BackgroundColor3 = Color3.fromRGB(255, 100, 100)}, 0.15)
+    end)
+    closeBtn.MouseLeave:Connect(function()
+        tween(closeBtn, {BackgroundColor3 = Color3.fromRGB(255, 70, 70)}, 0.15)
+    end)
+
+    -- FUNÇÃO MINIMIZAR/RESTAURAR
+    local function toggleMinimize()
+        guiMinimizado = not guiMinimizado
+        if guiMinimizado then
+            -- Minimizar: só mostra a title bar
+            tween(frame, {
+                Size = UDim2.new(0, 300, 0, 44),
+                Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, frame.Position.Y.Scale, frame.Position.Y.Offset)
+            }, 0.3)
+            -- Esconder conteúdo
+            for _, child in ipairs(frame:GetChildren()) do
+                if child.Name ~= "TitleBar" and child.Name ~= "Glow" and child.Name ~= "UICorner" and child.Name ~= "UIGradient" and child.Name ~= "UIStroke" then
+                    child.Visible = false
+                end
+            end
+            glow.Visible = false
+            minBtn.Text = "+"
+            titleLabel.Text = titulo .. " (Minimizado)"
+        else
+            -- Restaurar
+            tween(frame, {
+                Size = guiTamanhoOriginal,
+                Position = guiPosicaoOriginal
+            }, 0.3)
+            -- Mostrar conteúdo
+            for _, child in ipairs(frame:GetChildren()) do
+                if child.Name ~= "Glow" then
+                    child.Visible = true
+                end
+            end
+            glow.Visible = true
+            minBtn.Text = "−"
+            titleLabel.Text = titulo
+        end
+    end
+
+    minBtn.MouseButton1Click:Connect(toggleMinimize)
+
+    -- FUNÇÃO FECHAR (X)
+    closeBtn.MouseButton1Click:Connect(function()
+        -- Animação de saída
+        tween(frame, {Size = UDim2.new(0, 0, 0, 0), Position = UDim2.new(
+            frame.Position.X.Scale, frame.Position.X.Offset + 150,
+            frame.Position.Y.Scale, frame.Position.Y.Offset + 210
+        )}, 0.3)
+        task.wait(0.3)
+        guiFramePrincipal = nil
+        guiMinimizado = false
+        guiAtual = nil
+        limparTudo()
+    end)
+
+    -- Barra de pesquisa moderna
+    local searchContainer = Instance.new("Frame")
+    searchContainer.Name = "SearchContainer"
+    searchContainer.Size = UDim2.new(1, -20, 0, 36)
+    searchContainer.Position = UDim2.new(0, 10, 0, 50)
+    searchContainer.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+    searchContainer.BorderSizePixel = 0
+    searchContainer.Parent = frame
+
+    local searchCorner = Instance.new("UICorner")
+    searchCorner.CornerRadius = UDim.new(0, 10)
+    searchCorner.Parent = searchContainer
+
+    local searchIcon = Instance.new("TextLabel")
+    searchIcon.Size = UDim2.new(0, 28, 0, 28)
+    searchIcon.Position = UDim2.new(0, 8, 0.5, -14)
+    searchIcon.BackgroundTransparency = 1
+    searchIcon.Text = "🔍"
+    searchIcon.TextSize = 16
+    searchIcon.TextColor3 = Color3.fromRGB(150, 150, 170)
+    searchIcon.Parent = searchContainer
+
+    local searchBox = Instance.new("TextBox")
+    searchBox.Name = "SearchBox"
+    searchBox.Size = UDim2.new(1, -56, 1, 0)
+    searchBox.Position = UDim2.new(0, 36, 0, 0)
+    searchBox.BackgroundTransparency = 1
+    searchBox.Text = ""
+    searchBox.PlaceholderText = "Pesquisar jogador..."
+    searchBox.TextColor3 = Color3.fromRGB(220, 220, 235)
+    searchBox.PlaceholderColor3 = Color3.fromRGB(100, 100, 120)
+    searchBox.TextSize = 14
+    searchBox.Font = Enum.Font.Gotham
+    searchBox.TextXAlignment = Enum.TextXAlignment.Left
+    searchBox.ClearTextOnFocus = false
+    searchBox.Parent = searchContainer
+
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Name = "ClearBtn"
+    clearBtn.Size = UDim2.new(0, 22, 0, 22)
+    clearBtn.Position = UDim2.new(1, -28, 0.5, -11)
+    clearBtn.BackgroundTransparency = 1
+    clearBtn.Text = "✕"
+    clearBtn.TextColor3 = Color3.fromRGB(150, 150, 170)
+    clearBtn.TextSize = 14
+    clearBtn.Font = Enum.Font.GothamBold
+    clearBtn.Visible = false
+    clearBtn.Parent = searchContainer
+
+    -- Contador de jogadores
+    local counter = Instance.new("TextLabel")
+    counter.Name = "Counter"
+    counter.Size = UDim2.new(1, -20, 0, 18)
+    counter.Position = UDim2.new(0, 10, 0, 90)
+    counter.BackgroundTransparency = 1
+    counter.Text = "0 jogadores online"
+    counter.TextColor3 = Color3.fromRGB(150, 150, 170)
+    counter.TextSize = 11
+    counter.Font = Enum.Font.Gotham
+    counter.TextXAlignment = Enum.TextXAlignment.Left
+    counter.Parent = frame
+
+    -- Área de scroll
+    local scrolling = Instance.new("ScrollingFrame")
+    scrolling.Name = "PlayerList"
+    scrolling.Size = UDim2.new(1, -20, 1, -122)
+    scrolling.Position = UDim2.new(0, 10, 0, 112)
+    scrolling.BackgroundTransparency = 1
+    scrolling.BorderSizePixel = 0
+    scrolling.ScrollBarThickness = 3
+    scrolling.ScrollBarImageColor3 = Color3.fromRGB(255, 170, 190)
+    scrolling.Parent = frame
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.Parent = scrolling
+
+    local listPadding = Instance.new("UIPadding")
+    listPadding.PaddingTop = UDim.new(0, 4)
+    listPadding.PaddingBottom = UDim.new(0, 8)
+    listPadding.PaddingLeft = UDim.new(0, 4)
+    listPadding.PaddingRight = UDim.new(0, 4)
+    listPadding.Parent = scrolling
+
+    -- Sistema de arrastar (só na title bar)
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+            tween(titleBar, {BackgroundTransparency = 0.1}, 0.1)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            local novaPos = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+            frame.Position = novaPos
+            guiPosicaoOriginal = novaPos
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+            tween(titleBar, {BackgroundTransparency = 0.3}, 0.1)
+        end
+    end)
+
+    -- Sistema de pesquisa
+    local function filterPlayers()
+        local query = searchBox.Text:lower()
+        clearBtn.Visible = query ~= ""
+
+        local visiveis = 0
+        for _, child in ipairs(scrolling:GetChildren()) do
+            if child:IsA("TextButton") then
+                local name = child.Name:lower()
+                local displayName = ""
+                if child:FindFirstChild("DisplayLabel") then
+                    displayName = child.DisplayLabel.Text:lower()
+                end
+                local matches = name:find(query, 1, true) or displayName:find(query, 1, true)
+                child.Visible = matches
+                if matches then visiveis = visiveis + 1 end
+            end
+        end
+
+        counter.Text = visiveis .. " jogador" .. (visiveis == 1 and "" or "es") .. " visível" .. (visiveis == 1 and "" or "is")
+
+        task.wait()
+        scrolling.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
+    end
+
+    searchBox:GetPropertyChangedSignal("Text"):Connect(filterPlayers)
+    clearBtn.MouseButton1Click:Connect(function()
+        searchBox.Text = ""
+    end)
+
+    -- Lista de jogadores
+    local selectedButton = nil
+    local jogadorAtual = nil
+
+    local function refreshPlayers()
+        for _, child in ipairs(scrolling:GetChildren()) do
+            if child:IsA("TextButton") then
+                child:Destroy()
+            end
+        end
+        selectedButton = nil
+
+        local total = 0
+        for _, plr in ipairs(Players:GetPlayers()) do
+            total = total + 1
+            local btn = Instance.new("TextButton")
+            btn.Name = plr.Name
+            btn.Size = UDim2.new(1, -8, 0, 42)
+            btn.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
+            btn.Text = ""
+            btn.AutoButtonColor = false
+            btn.Parent = scrolling
+
+            local btnCorner = Instance.new("UICorner")
+            btnCorner.CornerRadius = UDim.new(0, 10)
+            btnCorner.Parent = btn
+
+            local btnStroke = Instance.new("UIStroke")
+            btnStroke.Color = Color3.fromRGB(60, 60, 75)
+            btnStroke.Thickness = 1
+            btnStroke.Transparency = 0.5
+            btnStroke.Parent = btn
+
+            local indicator = Instance.new("Frame")
+            indicator.Name = "Indicator"
+            indicator.Size = UDim2.new(0, 4, 0.6, 0)
+            indicator.Position = UDim2.new(0, 0, 0.2, 0)
+            indicator.BackgroundColor3 = Color3.fromRGB(255, 170, 190)
+            indicator.BorderSizePixel = 0
+            indicator.Visible = false
+            indicator.Parent = btn
+
+            local indCorner = Instance.new("UICorner")
+            indCorner.CornerRadius = UDim.new(0, 2)
+            indCorner.Parent = indicator
+
+            local avatar = Instance.new("Frame")
+            avatar.Size = UDim2.new(0, 30, 0, 30)
+            avatar.Position = UDim2.new(0, 8, 0.5, -15)
+            avatar.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
+            avatar.BorderSizePixel = 0
+            avatar.Parent = btn
+
+            local avatarCorner = Instance.new("UICorner")
+            avatarCorner.CornerRadius = UDim.new(0, 8)
+            avatarCorner.Parent = avatar
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Name = "NameLabel"
+            nameLabel.Size = UDim2.new(1, -60, 0.55, 0)
+            nameLabel.Position = UDim2.new(0, 46, 0, 5)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.Text = plr.Name
+            nameLabel.TextColor3 = Color3.fromRGB(220, 220, 235)
+            nameLabel.TextSize = 14
+            nameLabel.Font = Enum.Font.GothamBold
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.Parent = btn
+
+            local displayLabel = Instance.new("TextLabel")
+            displayLabel.Name = "DisplayLabel"
+            displayLabel.Size = UDim2.new(1, -60, 0.4, 0)
+            displayLabel.Position = UDim2.new(0, 46, 0.55, 0)
+            displayLabel.BackgroundTransparency = 1
+            displayLabel.Text = plr.DisplayName ~= plr.Name and "@" .. plr.DisplayName or ""
+            displayLabel.TextColor3 = Color3.fromRGB(130, 130, 150)
+            displayLabel.TextSize = 11
+            displayLabel.Font = Enum.Font.Gotham
+            displayLabel.TextXAlignment = Enum.TextXAlignment.Left
+            displayLabel.Parent = btn
+
+            local statusDot = Instance.new("Frame")
+            statusDot.Size = UDim2.new(0, 8, 0, 8)
+            statusDot.Position = UDim2.new(1, -18, 0.5, -4)
+            statusDot.BackgroundColor3 = Color3.fromRGB(80, 220, 120)
+            statusDot.BorderSizePixel = 0
+            statusDot.Parent = btn
+
+            local statusCorner = Instance.new("UICorner")
+            statusCorner.CornerRadius = UDim.new(1, 0)
+            statusCorner.Parent = statusDot
+
+            -- Hover
+            btn.MouseEnter:Connect(function()
+                if selectedButton ~= btn then
+                    tween(btn, {BackgroundColor3 = Color3.fromRGB(50, 50, 65)}, 0.15)
+                    tween(btnStroke, {Transparency = 0.2}, 0.15)
+                end
+            end)
+            btn.MouseLeave:Connect(function()
+                if selectedButton ~= btn then
+                    tween(btn, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.15)
+                    tween(btnStroke, {Transparency = 0.5}, 0.15)
+                end
+            end)
+
+            -- Click
+            btn.MouseButton1Click:Connect(function()
+                if modo == "homem" then
+                    if jogadorAtual and jogadorAtual ~= plr then
+                        removerBolasERestaurarRoupas(jogadorAtual)
+                        for _, child2 in ipairs(scrolling:GetChildren()) do
+                            if child2:IsA("TextButton") and child2.Name == jogadorAtual.Name then
+                                tween(child2, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.2)
+                                if child2:FindFirstChild("Indicator") then
+                                    child2.Indicator.Visible = false
+                                end
+                                if child2:FindFirstChild("NameLabel") then
+                                    child2.NameLabel.Text = jogadorAtual.Name
+                                end
+                                break
+                            end
+                        end
+                    end
+
+                    if jogadorAtual == plr then
+                        removerBolasERestaurarRoupas(plr)
+                        jogadorAtual = nil
+                        selectedButton = nil
+                        tween(btn, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.2)
+                        indicator.Visible = false
+                        nameLabel.Text = plr.Name
+                        return
+                    end
+
+                    if selectedButton and selectedButton ~= btn then
+                        tween(selectedButton, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.2)
+                        selectedButton.Indicator.Visible = false
+                    end
+
+                    selectedButton = btn
+                    jogadorAtual = plr
+                    tween(btn, {BackgroundColor3 = Color3.fromRGB(55, 45, 60)}, 0.2)
+                    indicator.Visible = true
+
+                    aplicarBolasNoJogador(plr)
+
+                    nameLabel.Text = "🍒 " .. plr.Name
+                    task.delay(1.5, function()
+                        if nameLabel and nameLabel.Parent then
+                            nameLabel.Text = "🍒 " .. plr.Name
+                        end
+                    end)
+
+                elseif modo == "mulher" then
+                    if jogadorAtual and jogadorAtual ~= plr then
+                        removerPintoERestaurarRoupas(jogadorAtual)
+                        for _, child2 in ipairs(scrolling:GetChildren()) do
+                            if child2:IsA("TextButton") and child2.Name == jogadorAtual.Name then
+                                tween(child2, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.2)
+                                if child2:FindFirstChild("Indicator") then
+                                    child2.Indicator.Visible = false
+                                end
+                                if child2:FindFirstChild("NameLabel") then
+                                    child2.NameLabel.Text = jogadorAtual.Name
+                                end
+                                break
+                            end
+                        end
+                    end
+
+                    if jogadorAtual == plr then
+                        removerPintoERestaurarRoupas(plr)
+                        jogadorAtual = nil
+                        selectedButton = nil
+                        tween(btn, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.2)
+                        indicator.Visible = false
+                        nameLabel.Text = plr.Name
+                        return
+                    end
+
+                    if selectedButton and selectedButton ~= btn then
+                        tween(selectedButton, {BackgroundColor3 = Color3.fromRGB(40, 40, 52)}, 0.2)
+                        selectedButton.Indicator.Visible = false
+                    end
+
+                    selectedButton = btn
+                    jogadorAtual = plr
+                    tween(btn, {BackgroundColor3 = Color3.fromRGB(55, 45, 60)}, 0.2)
+                    indicator.Visible = true
+
+                    aplicarPintoDuroNoJogador(plr)
+
+                    nameLabel.Text = "🍆 " .. plr.Name
+                    task.delay(1.5, function()
+                        if nameLabel and nameLabel.Parent then
+                            nameLabel.Text = "🍆 " .. plr.Name
+                        end
+                    end)
+                end
+            end)
+        end
+
+        counter.Text = total .. " jogador" .. (total == 1 and "" or "es") .. " online"
+
+        if searchBox.Text ~= "" then
+            filterPlayers()
+        end
+
+        task.wait()
+        scrolling.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
+    end
+
+    refreshPlayers()
+    Players.PlayerAdded:Connect(refreshPlayers)
+    Players.PlayerRemoving:Connect(function(plr)
+        if jogadorAtual == plr then
+            jogadorAtual = nil
+            selectedButton = nil
+        end
+        refreshPlayers()
+    end)
+
+    -- Atalhos (Insert agora funciona com guiFramePrincipal)
+    local deleteConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.Delete then
+            limparTudo()
+        end
+        if input.KeyCode == Enum.KeyCode.Insert then
+            if guiFramePrincipal and guiFramePrincipal.Parent then
+                toggleMinimize()
+            end
+        end
+    end)
+    table.insert(conexoes, deleteConn)
+
+    -- Animação de entrada
+    frame.Size = UDim2.new(0, 0, 0, 0)
+    frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    tween(frame, {Size = guiTamanhoOriginal, Position = guiPosicaoOriginal}, 0.35)
+
+    guiAtual = playerGui
+    return playerGui
+end
+
+-- ============================================
+-- SCRIPT HOMEM (PINTO EM MIM + GUI + 4 BOLAS NO ALVO + BANGSCRIPT)
+-- ============================================
+local function executarScriptHomem()
+    selectorGui:Destroy()
+    modoAtual = "homem"
+
+    if player.Character then
+        roupasJogadorLocal = salvarRoupas(player.Character)
+    end
+
+    if player.Character then
+        setupPintoLocal()
+    end
+
+    if player.Character then removerRoupas(player.Character) end
+
+    local function conectarHumanoid()
+        local character = player.Character
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return end
+
+        if humanoidConnection then
+            humanoidConnection:Disconnect()
+            humanoidConnection = nil
+        end
+
+        humanoidConnection = humanoid.Died:Connect(function()
+            limparTudo()
+        end)
+    end
+
+    conectarHumanoid()
+    local charConn = player.CharacterAdded:Connect(function(char)
+        task.wait(0.1)
+        limparTudo()
+    end)
+    table.insert(conexoes, charConn)
+
+    local fConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed then return end
+        if input.KeyCode == Enum.KeyCode.F then
+            pintoLocal.estaRigido = not pintoLocal.estaRigido
+            local character = player.Character
+            if not character then return end
+            local rootPart = character:WaitForChild("HumanoidRootPart")
+
+            if pintoLocal.estaRigido then
+                for i, seg in ipairs(pintoLocal.segmentos) do
+                    local offsetZ = -0.7 - (i * alturaSegmento)
+                    seg.CFrame = rootPart.CFrame * CFrame.new(0, -1.1, offsetZ) * CFrame.Angles(0, math.rad(90), 0)
+                    local w = Instance.new("WeldConstraint")
+                    w.Part0 = (i == 1) and rootPart or pintoLocal.segmentos[i-1]
+                    w.Part1 = seg
+                    w.Parent = seg
+                    table.insert(pintoLocal.weldsDeRigidez, w)
+                end
+            else
+                for _, w in ipairs(pintoLocal.weldsDeRigidez) do w:Destroy() end
+                pintoLocal.weldsDeRigidez = {}
+            end
+        end
+    end)
+    table.insert(conexoes, fConn)
+
+    -- BANGSCRIPT MASCULINO (tecla H)
+    local bangConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.H then
+            if bangMovimentoAtivo then
+                pararBang()
+                print("⏹ Bang parado")
+            else
+                iniciarBangMasculino()
+                if bangMovimentoAtivo then
+                    print("🔥 Bang iniciado (de costas): " .. (bangAlvo and bangAlvo.Name or "alvo"))
+                end
+            end
+        end
+    end)
+    table.insert(conexoes, bangConn)
+
+    local deleteConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.Delete then
+            limparTudo()
+        end
+    end)
+    table.insert(conexoes, deleteConn)
+
+    criarPlayerSelectGUI("Adicionar Peito", "homem")
+end
+
+-- ============================================
+-- SCRIPT MULHER (4 BOLAS EM MIM + GUI + PINTO DURO NO ALVO + BANGIRL)
+-- ============================================
+local function executarScriptMulher()
+    selectorGui:Destroy()
+    modoAtual = "mulher"
+
+    if player.Character then
+        roupasJogadorLocal = salvarRoupas(player.Character)
+    end
+
+    iniciarBolasAnimadasLocal()
+
+    if player.Character then removerRoupas(player.Character) end
+
+    local function conectarHumanoid()
+        local character = player.Character
+        if not character then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return end
+
+        if humanoidConnection then
+            humanoidConnection:Disconnect()
+            humanoidConnection = nil
+        end
+
+        humanoidConnection = humanoid.Died:Connect(function()
+            limparTudo()
+        end)
+    end
+
+    conectarHumanoid()
+    local charConn = player.CharacterAdded:Connect(function(char)
+        task.wait(0.1)
+        limparTudo()
+    end)
+    table.insert(conexoes, charConn)
+
+    -- BANGIRL FEMININO (tecla H)
+    local bangConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.H then
+            if bangMovimentoAtivo then
+                pararBang()
+                print("⏹ Bang parado")
+            else
+                iniciarBangFeminino()
+                if bangMovimentoAtivo then
+                    print("🔥 Bang iniciado (de frente): " .. (bangAlvo and bangAlvo.Name or "alvo"))
+                end
+            end
+        end
+    end)
+    table.insert(conexoes, bangConn)
+
+    local deleteConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.Delete then
+            limparTudo()
+        end
+    end)
+    table.insert(conexoes, deleteConn)
+
+    criarPlayerSelectGUI("Adicionar Piroka", "mulher")
+end
+
+-- ============================================
+-- EVENTOS DOS BOTÕES
+-- ============================================
+btnHomem.MouseButton1Click:Connect(executarScriptHomem)
+btnMulher.MouseButton1Click:Connect(executarScriptMulher)
+
+-- Animação de entrada
+container.Size = UDim2.new(0, 0, 0, 0)
+container.Position = UDim2.new(0.5, 0, 0.5, 0)
+tween(container, {Size = UDim2.new(0, 400, 0, 250), Position = UDim2.new(0.5, -200, 0.5, -125)}, 0.35)
