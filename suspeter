@@ -54,7 +54,21 @@ local guiTamanhoOriginal = nil
 local bangMovimentoAtivo = false
 local bangConexao = nil
 local bangAlvo = nil
-local bangProgresso = 0  -- 0 a 1, sincroniza com vai-e-vem do bang
+local bangProgresso = 0
+
+-- VARIÁVEIS DE FÍSICA DOS PEITOS
+local peitoFisica = {
+    velocidadeY = 0,
+    posicaoY = 0,
+    posicaoBase = 0,
+    amortecimento = 0.92,
+    gravidade = -0.15,
+    impulsoPulo = 0.8,
+    elasticidade = 0.6,
+    massa = 1.5,
+    estaNoChao = true,
+    alturaChao = 0
+}  -- 0 a 1, sincroniza com vai-e-vem do bang
 
 -- Config Masculino (bangscript - atrás de costas)
 local BANG_M_DISTANCIA_ATRAS = 2.8
@@ -1070,7 +1084,8 @@ btnMulher.MouseLeave:Connect(function()
 end)
 
 -- ============================================
--- CRIAR GUI DE SELEÇÃO DE JOGADORES (REUTILIZÁVEL) - VISUAL MODERNO
+-- ============================================
+-- CRIAR GUI DE SELEÇÃO DE JOGADORES - PROFISSIONAL
 -- ============================================
 local function criarPlayerSelectGUI(titulo, modo)
     local playerGui = Instance.new("ScreenGui")
@@ -1079,7 +1094,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     playerGui.Parent = player:WaitForChild("PlayerGui")
     guiAtual = playerGui
 
-    -- Frame principal com glassmorphism
+    -- Frame principal
     local frame = Instance.new("Frame")
     frame.Name = "MainFrame"
     frame.Size = UDim2.new(0, 300, 0, 420)
@@ -1092,7 +1107,6 @@ local function criarPlayerSelectGUI(titulo, modo)
     guiTamanhoOriginal = frame.Size
     guiPosicaoOriginal = frame.Position
 
-    -- Gradiente de fundo
     local gradient = Instance.new("UIGradient")
     gradient.Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0, Color3.fromRGB(25, 25, 35)),
@@ -1111,20 +1125,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     stroke.Transparency = 0.6
     stroke.Parent = frame
 
-    -- Glow effect
-    local glow = Instance.new("ImageLabel")
-    glow.Name = "Glow"
-    glow.Size = UDim2.new(1, 40, 1, 40)
-    glow.Position = UDim2.new(0, -20, 0, -20)
-    glow.BackgroundTransparency = 1
-    glow.Image = "rbxassetid://131604521"
-    glow.ImageColor3 = Color3.fromRGB(255, 170, 190)
-    glow.ImageTransparency = 0.85
-    glow.ScaleType = Enum.ScaleType.Slice
-    glow.SliceCenter = Rect.new(10, 10, 118, 118)
-    glow.Parent = frame
-
-    -- Barra de título moderna
+    -- TitleBar ARRASTÁVEL
     local titleBar = Instance.new("Frame")
     titleBar.Name = "TitleBar"
     titleBar.Size = UDim2.new(1, 0, 0, 44)
@@ -1145,17 +1146,17 @@ local function criarPlayerSelectGUI(titulo, modo)
     fixCorner.BorderSizePixel = 0
     fixCorner.Parent = titleBar
 
-    -- Ícone decorativo
     local icon = Instance.new("TextLabel")
     icon.Size = UDim2.new(0, 32, 0, 32)
     icon.Position = UDim2.new(0, 10, 0.5, -16)
     icon.BackgroundTransparency = 1
-    icon.Text = modo == "homem" and "🍒" or "🍆"
+    icon.Text = modo == "homem" and "(Y)" or "(P)"
     icon.TextSize = 22
     icon.TextColor3 = Color3.fromRGB(255, 170, 190)
     icon.Parent = titleBar
 
     local titleLabel = Instance.new("TextLabel")
+    titleLabel.Name = "TitleLabel"
     titleLabel.Size = UDim2.new(1, -120, 1, 0)
     titleLabel.Position = UDim2.new(0, 44, 0, 0)
     titleLabel.BackgroundTransparency = 1
@@ -1166,7 +1167,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     titleLabel.TextXAlignment = Enum.TextXAlignment.Left
     titleLabel.Parent = titleBar
 
-    -- CONTAINER DE BOTÕES (Minimizar & Fechar)
+    -- Botões Minimizar & Fechar
     local btnContainer = Instance.new("Frame")
     btnContainer.Name = "BtnContainer"
     btnContainer.Size = UDim2.new(0, 64, 0, 28)
@@ -1174,13 +1175,12 @@ local function criarPlayerSelectGUI(titulo, modo)
     btnContainer.BackgroundTransparency = 1
     btnContainer.Parent = titleBar
 
-    -- Botão Minimizar
     local minBtn = Instance.new("TextButton")
     minBtn.Name = "MinBtn"
     minBtn.Size = UDim2.new(0, 28, 0, 28)
     minBtn.Position = UDim2.new(0, 0, 0, 0)
     minBtn.BackgroundColor3 = Color3.fromRGB(255, 190, 60)
-    minBtn.Text = "−"
+    minBtn.Text = "_"
     minBtn.TextColor3 = Color3.fromRGB(40, 30, 10)
     minBtn.TextSize = 18
     minBtn.Font = Enum.Font.GothamBold
@@ -1198,13 +1198,12 @@ local function criarPlayerSelectGUI(titulo, modo)
         tween(minBtn, {BackgroundColor3 = Color3.fromRGB(255, 190, 60)}, 0.15)
     end)
 
-    -- Botão Fechar
     local closeBtn = Instance.new("TextButton")
     closeBtn.Name = "CloseBtn"
     closeBtn.Size = UDim2.new(0, 28, 0, 28)
     closeBtn.Position = UDim2.new(0, 36, 0, 0)
     closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
-    closeBtn.Text = "✕"
+    closeBtn.Text = "X"
     closeBtn.TextColor3 = Color3.new(1, 1, 1)
     closeBtn.TextSize = 13
     closeBtn.Font = Enum.Font.GothamBold
@@ -1222,45 +1221,40 @@ local function criarPlayerSelectGUI(titulo, modo)
         tween(closeBtn, {BackgroundColor3 = Color3.fromRGB(255, 70, 70)}, 0.15)
     end)
 
-    -- FUNÇÃO MINIMIZAR/RESTAURAR
+    -- CONTENT CONTAINER (para minimizar/restaurar sem perder players)
+    local contentContainer = Instance.new("Frame")
+    contentContainer.Name = "ContentContainer"
+    contentContainer.Size = UDim2.new(1, 0, 1, -44)
+    contentContainer.Position = UDim2.new(0, 0, 0, 44)
+    contentContainer.BackgroundTransparency = 1
+    contentContainer.Parent = frame
+
+    -- NOTA: SearchContainer, Counter e PlayerList serão criados dentro deste container
+
     local function toggleMinimize()
         guiMinimizado = not guiMinimizado
         if guiMinimizado then
-            -- Minimizar: só mostra a title bar
-            tween(frame, {
-                Size = UDim2.new(0, 300, 0, 44),
-                Position = UDim2.new(frame.Position.X.Scale, frame.Position.X.Offset, frame.Position.Y.Scale, frame.Position.Y.Offset)
-            }, 0.3)
-            -- Esconder conteúdo
-            for _, child in ipairs(frame:GetChildren()) do
-                if child.Name ~= "TitleBar" and child.Name ~= "Glow" and child.Name ~= "UICorner" and child.Name ~= "UIGradient" and child.Name ~= "UIStroke" then
-                    child.Visible = false
-                end
-            end
-            glow.Visible = false
+            -- Guarda posição e tamanho atuais
+            guiTamanhoOriginal = frame.Size
+            guiPosicaoOriginal = frame.Position
+            tween(frame, {Size = UDim2.new(0, 300, 0, 44)}, 0.3)
+            -- Esconde apenas o container de conteúdo (mantém TitleBar e decoração)
+            contentContainer.Visible = false
             minBtn.Text = "+"
-            titleLabel.Text = titulo .. " (Minimizado)"
+            titleLabel.Text = titulo .. " (Min)"
         else
-            -- Restaurar
-            tween(frame, {
-                Size = guiTamanhoOriginal,
-                Position = guiPosicaoOriginal
-            }, 0.3)
-            -- Mostrar conteúdo
-            for _, child in ipairs(frame:GetChildren()) do
-                if child.Name ~= "Glow" then
-                    child.Visible = true
-                end
-            end
-            glow.Visible = true
-            minBtn.Text = "−"
+            -- Restaura tamanho e posição
+            tween(frame, {Size = guiTamanhoOriginal, Position = guiPosicaoOriginal}, 0.3)
+            -- Mostra o container de conteúdo - players continuam lá!
+            contentContainer.Visible = true
+            minBtn.Text = "_"
             titleLabel.Text = titulo
         end
     end
 
     minBtn.MouseButton1Click:Connect(toggleMinimize)
 
-    -- FUNÇÃO FECHAR (X)
+    -- FECHAR CORRIGIDO
     closeBtn.MouseButton1Click:Connect(function()
         -- Animação de saída
         tween(frame, {Size = UDim2.new(0, 0, 0, 0), Position = UDim2.new(
@@ -1268,20 +1262,24 @@ local function criarPlayerSelectGUI(titulo, modo)
             frame.Position.Y.Scale, frame.Position.Y.Offset + 210
         )}, 0.3)
         task.wait(0.3)
+        -- Destrói o ScreenGui inteiro para sumir da tela completamente
+        if guiAtual and guiAtual.Parent then
+            guiAtual:Destroy()
+        end
         guiFramePrincipal = nil
         guiMinimizado = false
         guiAtual = nil
-        limparTudo()
+        -- Não chama limparTudo() aqui para não remover as partes do personagem
     end)
 
-    -- Barra de pesquisa moderna
+    -- Barra de pesquisa
     local searchContainer = Instance.new("Frame")
     searchContainer.Name = "SearchContainer"
     searchContainer.Size = UDim2.new(1, -20, 0, 36)
     searchContainer.Position = UDim2.new(0, 10, 0, 50)
     searchContainer.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
     searchContainer.BorderSizePixel = 0
-    searchContainer.Parent = frame
+    searchContainer.Parent = contentContainer
 
     local searchCorner = Instance.new("UICorner")
     searchCorner.CornerRadius = UDim.new(0, 10)
@@ -1291,7 +1289,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     searchIcon.Size = UDim2.new(0, 28, 0, 28)
     searchIcon.Position = UDim2.new(0, 8, 0.5, -14)
     searchIcon.BackgroundTransparency = 1
-    searchIcon.Text = "🔍"
+    searchIcon.Text = "[O]"
     searchIcon.TextSize = 16
     searchIcon.TextColor3 = Color3.fromRGB(150, 150, 170)
     searchIcon.Parent = searchContainer
@@ -1316,14 +1314,14 @@ local function criarPlayerSelectGUI(titulo, modo)
     clearBtn.Size = UDim2.new(0, 22, 0, 22)
     clearBtn.Position = UDim2.new(1, -28, 0.5, -11)
     clearBtn.BackgroundTransparency = 1
-    clearBtn.Text = "✕"
+    clearBtn.Text = "X"
     clearBtn.TextColor3 = Color3.fromRGB(150, 150, 170)
     clearBtn.TextSize = 14
     clearBtn.Font = Enum.Font.GothamBold
     clearBtn.Visible = false
     clearBtn.Parent = searchContainer
 
-    -- Contador de jogadores
+    -- Contador
     local counter = Instance.new("TextLabel")
     counter.Name = "Counter"
     counter.Size = UDim2.new(1, -20, 0, 18)
@@ -1334,7 +1332,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     counter.TextSize = 11
     counter.Font = Enum.Font.Gotham
     counter.TextXAlignment = Enum.TextXAlignment.Left
-    counter.Parent = frame
+    counter.Parent = contentContainer
 
     -- Área de scroll
     local scrolling = Instance.new("ScrollingFrame")
@@ -1345,7 +1343,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     scrolling.BorderSizePixel = 0
     scrolling.ScrollBarThickness = 3
     scrolling.ScrollBarImageColor3 = Color3.fromRGB(255, 170, 190)
-    scrolling.Parent = frame
+    scrolling.Parent = contentContainer
 
     local layout = Instance.new("UIListLayout")
     layout.Padding = UDim.new(0, 8)
@@ -1358,7 +1356,7 @@ local function criarPlayerSelectGUI(titulo, modo)
     listPadding.PaddingRight = UDim.new(0, 4)
     listPadding.Parent = scrolling
 
-    -- Sistema de arrastar (só na title bar)
+    -- ARRASTAR (Drag)
     local dragging = false
     local dragStart = nil
     local startPos = nil
@@ -1393,7 +1391,7 @@ local function criarPlayerSelectGUI(titulo, modo)
         end
     end)
 
-    -- Sistema de pesquisa
+    -- Pesquisa
     local function filterPlayers()
         local query = searchBox.Text:lower()
         clearBtn.Visible = query ~= ""
@@ -1646,7 +1644,7 @@ local function criarPlayerSelectGUI(titulo, modo)
         refreshPlayers()
     end)
 
-    -- Atalhos (Insert agora funciona com guiFramePrincipal)
+    -- Atalhos
     local deleteConn = UserInputService.InputBegan:Connect(function(input, gp)
         if gp then return end
         if input.KeyCode == Enum.KeyCode.Delete then
@@ -1669,9 +1667,6 @@ local function criarPlayerSelectGUI(titulo, modo)
     return playerGui
 end
 
--- ============================================
--- SCRIPT HOMEM (PINTO EM MIM + GUI + 4 BOLAS NO ALVO + BANGSCRIPT)
--- ============================================
 local function executarScriptHomem()
     selectorGui:Destroy()
     modoAtual = "homem"
@@ -1759,6 +1754,80 @@ local function executarScriptHomem()
         end
     end)
     table.insert(conexoes, deleteConn)
+
+
+    -- SISTEMA DE JATO BRANCO (tecla J)
+    local jatoAtivo = false
+    local jatoParticulas = nil
+
+    local function criarJato()
+        local character = player.Character
+        if not character then return end
+
+        -- Encontrar a ponta do pinto
+        local ponta = character:FindFirstChild("PontaRedonda")
+        if not ponta then return end
+
+        -- Criar partículas
+        local attachment = Instance.new("Attachment")
+        attachment.Name = "JatoAttachment"
+        attachment.Position = Vector3.new(0, 0, 0.5) -- na ponta
+        attachment.Parent = ponta
+
+        local particulas = Instance.new("ParticleEmitter")
+        particulas.Name = "JatoBranco"
+        particulas.Color = ColorSequence.new(Color3.new(1, 1, 1))
+        particulas.Size = NumberSequence.new(0.3, 0.1)
+        particulas.Transparency = NumberSequence.new(0.2, 1)
+        particulas.Lifetime = NumberRange.new(0.5, 1)
+        particulas.Rate = 100
+        particulas.Speed = NumberRange.new(8, 15)
+        particulas.SpreadAngle = Vector2.new(15, 15)
+        particulas.Acceleration = Vector3.new(0, -5, 0)
+        particulas.Parent = attachment
+
+        -- Luz na ponta
+        local luz = Instance.new("PointLight")
+        luz.Name = "JatoLight"
+        luz.Color = Color3.new(1, 1, 1)
+        luz.Brightness = 2
+        luz.Range = 5
+        luz.Parent = ponta
+
+        jatoParticulas = {attachment = attachment, particulas = particulas, luz = luz}
+    end
+
+    local function destruirJato()
+        if jatoParticulas then
+            if jatoParticulas.attachment then jatoParticulas.attachment:Destroy() end
+            if jatoParticulas.luz then jatoParticulas.luz:Destroy() end
+            jatoParticulas = nil
+        end
+    end
+
+    local jConn = UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode == Enum.KeyCode.J then
+            jatoAtivo = not jatoAtivo
+            if jatoAtivo then
+                criarJato()
+                print("💦 Jato ativado!")
+            else
+                destruirJato()
+                print("⏹ Jato desativado!")
+            end
+        end
+    end)
+    table.insert(conexoes, jConn)
+
+    -- Limpar jato ao morrer/resetar
+    local jatoCleanConn = player.CharacterAdded:Connect(function()
+        if jatoAtivo then
+            jatoAtivo = false
+            destruirJato()
+        end
+    end)
+    table.insert(conexoes, jatoCleanConn)
 
     criarPlayerSelectGUI("Adicionar Peito", "homem")
 end
