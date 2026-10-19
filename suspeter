@@ -1908,3 +1908,396 @@ btnMulher.MouseButton1Click:Connect(executarScriptMulher)
 container.Size = UDim2.new(0, 0, 0, 0)
 container.Position = UDim2.new(0.5, 0, 0.5, 0)
 tween(container, {Size = UDim2.new(0, 400, 0, 250), Position = UDim2.new(0.5, -200, 0.5, -125)}, 0.35)
+
+--[[
+	1) Executa o loadstring (que entrega o item no slot 1).
+	2) Com o item do slot 1 equipado por 10s, o líquido é jogado automaticamente.
+	Guardar o item ou trocar de slot reinicia o timer.
+	Executar novamente remove a versão anterior automaticamente.
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+
+local env = (getgenv and getgenv()) or _G
+if env.__LiquidFXCleanup then
+	pcall(env.__LiquidFXCleanup)
+end
+
+--------------------------------------------------------------------
+-- CONFIGURAÇÕES
+--------------------------------------------------------------------
+local CONFIG = {
+	URL = "https://pastefy.app/YZoglOyJ/raw",
+	Slot = 1,
+	ActivationDelay = 10,     -- segundos com o item equipado até jogar
+	RepeatWhileHolding = true,-- repete a cada ActivationDelay enquanto segurar
+	Droplets = 32,
+	ThrowTime = 0.25,
+	SpeedMin = 38,
+	SpeedMax = 62,
+	Spread = 0.025,
+	UpBias = 0.08,
+	GravityScale = 0.6,
+	Drag = 0.35,
+	PuddleLifeMin = 9,
+	PuddleLifeMax = 13,
+	DryTime = 4,
+	MaxParts = 700,
+	Color = Color3.fromRGB(248, 248, 244),
+	Reflectance = 0.12,
+}
+
+--------------------------------------------------------------------
+-- UTILIDADES
+--------------------------------------------------------------------
+local folder = Instance.new("Folder")
+folder.Name = "LiquidFX"
+folder.Parent = Workspace
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+rayParams.FilterDescendantsInstances = { folder }
+
+local partCount = 0
+local droplets = {}
+
+local function rand(a, b)
+	return a + math.random() * (b - a)
+end
+
+local function tween(inst, t, props, style, dir)
+	local tw = TweenService:Create(
+		inst,
+		TweenInfo.new(t, style or Enum.EasingStyle.Sine, dir or Enum.EasingDirection.Out),
+		props
+	)
+	tw:Play()
+	return tw
+end
+
+local function makePart(size, cf, shape)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanTouch = false
+	p.CanQuery = false
+	p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic
+	p.Color = CONFIG.Color
+	p.Reflectance = CONFIG.Reflectance
+	p.Shape = shape or Enum.PartType.Block
+	p.Size = size
+	p.CFrame = cf
+	p.Parent = folder
+	partCount += 1
+	return p
+end
+
+local function kill(part)
+	if part and part.Parent then
+		part:Destroy()
+		partCount -= 1
+	end
+end
+
+local function scheduleDry(part, size, life)
+	task.delay(life, function()
+		if not part.Parent then return end
+		tween(part, CONFIG.DryTime, {
+			Transparency = 1,
+			Size = Vector3.new(size.X * 0.5, size.Y * 0.55, size.Z * 0.55),
+		}, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+		task.delay(CONFIG.DryTime + 0.1, function()
+			kill(part)
+		end)
+	end)
+end
+
+--------------------------------------------------------------------
+-- ESCORRIMENTO NA PAREDE
+--------------------------------------------------------------------
+local function drip(pos, normal)
+	if partCount > CONFIG.MaxParts then return end
+
+	local width = rand(0.05, 0.1)
+	local length = rand(1.2, 3.5)
+	local startPos = pos + normal * 0.03
+	local rot = CFrame.Angles(0, 0, math.pi / 2)
+
+	local streak = makePart(
+		Vector3.new(0.05, width, width),
+		CFrame.new(startPos) * rot,
+		Enum.PartType.Cylinder
+	)
+
+	local dur = rand(1.8, 3.2)
+	tween(streak, dur, {
+		Size = Vector3.new(length, width, width),
+		CFrame = CFrame.new(startPos - Vector3.new(0, length / 2, 0)) * rot,
+	}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+	scheduleDry(streak, streak.Size, rand(CONFIG.PuddleLifeMin * 0.6, CONFIG.PuddleLifeMax * 0.6))
+end
+
+--------------------------------------------------------------------
+-- MANCHA / POÇA
+--------------------------------------------------------------------
+local function splat(pos, normal, scale)
+	if partCount > CONFIG.MaxParts then return end
+
+	local up = (math.abs(normal.Y) > 0.99) and Vector3.xAxis or Vector3.yAxis
+	local base = CFrame.lookAt(pos + normal * 0.02, pos + normal, up) * CFrame.Angles(0, math.pi / 2, 0)
+
+	local blobs = scale > 0.6 and math.random(2, 3) or 1
+	for i = 1, blobs do
+		local ang = rand(0, math.pi * 2)
+		local dist = (i == 1) and 0 or rand(0.2, 0.7) * scale
+		local off = Vector3.new(0.004 * i, math.cos(ang) * dist, math.sin(ang) * dist)
+		local cf = base * CFrame.new(off) * CFrame.Angles(rand(0, math.pi * 2), 0, 0)
+
+		local d1 = scale * rand(0.7, 1.3)
+		local d2 = scale * rand(0.5, 1.1)
+		local finalSize = Vector3.new(0.025, d1, d2)
+
+		local blob = makePart(Vector3.new(0.02, 0.05, 0.05), cf, Enum.PartType.Cylinder)
+		tween(blob, rand(0.3, 0.6), { Size = finalSize }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		scheduleDry(blob, finalSize, rand(CONFIG.PuddleLifeMin, CONFIG.PuddleLifeMax))
+	end
+
+	if normal.Y < 0.6 and normal.Y > -0.5 and scale > 0.5 then
+		if math.random() < 0.7 then
+			drip(pos, normal)
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- GOTAS (SIMULAÇÃO COM RAYCAST)
+--------------------------------------------------------------------
+local function spawnDroplet(pos, vel, size, depth)
+	if partCount > CONFIG.MaxParts then return end
+	local p = makePart(Vector3.new(size, size, size), CFrame.new(pos))
+	local mesh = Instance.new("SpecialMesh")
+	mesh.MeshType = Enum.MeshType.Sphere
+	mesh.Parent = p
+	table.insert(droplets, {
+		part = p, pos = pos, vel = vel, size = size, depth = depth, age = 0,
+	})
+end
+
+local function onImpact(d, hit)
+	local n = hit.Normal
+	local scale = d.size * rand(3.5, 6.5)
+	if d.depth > 0 then
+		scale = d.size * rand(2, 3.5)
+	end
+	splat(hit.Position, n, scale)
+
+	if d.depth == 0 and d.size > 0.2 and math.random() < 0.55 then
+		for _ = 1, math.random(2, 4) do
+			local tangent = Vector3.new(rand(-1, 1), rand(-1, 1), rand(-1, 1))
+			local v = (n * rand(0.8, 1.4) + tangent * 0.6).Unit * rand(8, 18)
+			spawnDroplet(hit.Position + n * 0.05, v, rand(0.05, 0.11), 1)
+		end
+	end
+end
+
+local gravity = Vector3.new(0, -Workspace.Gravity * CONFIG.GravityScale, 0)
+
+local heartbeat = RunService.Heartbeat:Connect(function(dt)
+	for i = #droplets, 1, -1 do
+		local d = droplets[i]
+		d.age += dt
+
+		d.vel = d.vel + gravity * dt
+		d.vel = d.vel * (1 - CONFIG.Drag * dt)
+
+		local newPos = d.pos + d.vel * dt
+		local hit = Workspace:Raycast(d.pos, newPos - d.pos, rayParams)
+
+		if hit then
+			onImpact(d, hit)
+			kill(d.part)
+			table.remove(droplets, i)
+		elseif d.age > 6 or newPos.Y < Workspace.FallenPartsDestroyHeight then
+			kill(d.part)
+			table.remove(droplets, i)
+		else
+			d.pos = newPos
+			local speed = d.vel.Magnitude
+			if speed > 0.1 then
+				local stretch = math.clamp(1 + speed / 28, 1, 2.8)
+				d.part.Size = Vector3.new(d.size, d.size, d.size * stretch)
+				d.part.CFrame = CFrame.lookAt(newPos, newPos + d.vel)
+			else
+				d.part.CFrame = CFrame.new(newPos)
+			end
+		end
+	end
+end)
+
+--------------------------------------------------------------------
+-- ARREMESSO (sempre pra frente do personagem)
+--------------------------------------------------------------------
+local function throw()
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+
+	rayParams.FilterDescendantsInstances = { folder, char }
+
+	task.spawn(function()
+		local steps = 8
+		local perStep = math.ceil(CONFIG.Droplets / steps)
+
+		for _ = 1, steps do
+			if not char.Parent then break end
+
+			local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso")
+			local base = torso and torso.Position or hrp.Position
+
+			local forward = hrp.CFrame.LookVector
+			local origin = base + forward * 1.8
+			local aim = forward + Vector3.new(0, CONFIG.UpBias, 0)
+
+			for _ = 1, perStep do
+				local speed = rand(CONFIG.SpeedMin, CONFIG.SpeedMax)
+				local jitter = Vector3.new(rand(-1, 1), rand(-1, 1), rand(-1, 1)) * CONFIG.Spread
+				local dir = (aim.Unit + jitter).Unit
+				local size = (math.random() < 0.15) and rand(0.35, 0.5) or rand(0.12, 0.3)
+
+				spawnDroplet(
+					origin + Vector3.new(rand(-0.1, 0.1), rand(-0.1, 0.1), rand(-0.1, 0.1)),
+					dir * speed,
+					size,
+					0
+				)
+			end
+			task.wait(CONFIG.ThrowTime / steps)
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- DETECÇÃO: ITEM DO SLOT 1 EQUIPADO POR 10s => JOGA AUTOMÁTICO
+--------------------------------------------------------------------
+local token = 0
+local holding = false
+local toolOrder = {}
+local conns = {}
+
+local function addTool(tool)
+	if tool:IsA("Tool") and not table.find(toolOrder, tool) then
+		table.insert(toolOrder, tool)
+	end
+end
+
+local function pruneTools()
+	local char = player.Character
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	for i = #toolOrder, 1, -1 do
+		local t = toolOrder[i]
+		if not (t.Parent and (t.Parent == backpack or t.Parent == char)) then
+			table.remove(toolOrder, i)
+		end
+	end
+end
+
+local function holdingSlot()
+	pruneTools()
+	local char = player.Character
+	local equipped = char and char:FindFirstChildOfClass("Tool")
+	return equipped ~= nil and equipped == toolOrder[CONFIG.Slot]
+end
+
+local function startTimer()
+	token += 1
+	local my = token
+	task.spawn(function()
+		while my == token do
+			task.wait(CONFIG.ActivationDelay)
+			if my ~= token or not holdingSlot() then return end
+			throw()
+			if not CONFIG.RepeatWhileHolding then return end
+		end
+	end)
+end
+
+local function evaluate()
+	if holdingSlot() then
+		if holding then return end
+		holding = true
+		startTimer()
+	else
+		holding = false
+		token += 1
+	end
+end
+
+local function watch(container)
+	for _, c in ipairs(container:GetChildren()) do
+		addTool(c)
+	end
+	table.insert(conns, container.ChildAdded:Connect(function(c)
+		addTool(c)
+		evaluate()
+	end))
+	table.insert(conns, container.ChildRemoved:Connect(function()
+		task.defer(evaluate)
+	end))
+end
+
+local function setup()
+	local backpack = player:FindFirstChildOfClass("Backpack") or player:WaitForChild("Backpack")
+	watch(backpack)
+	if player.Character then
+		watch(player.Character)
+	end
+	table.insert(conns, player.CharacterAdded:Connect(function(char)
+		holding = false
+		token += 1
+		toolOrder = {}
+		for _, c in ipairs(player:WaitForChild("Backpack"):GetChildren()) do
+			addTool(c)
+		end
+		watch(char)
+		evaluate()
+	end))
+	evaluate()
+end
+
+--------------------------------------------------------------------
+-- INÍCIO: EXECUTA O LOADSTRING (entrega o item) E COMEÇA A OBSERVAR
+--------------------------------------------------------------------
+setup()
+
+task.spawn(function()
+	local ok, err = pcall(function()
+		loadstring(game:HttpGet(CONFIG.URL))()
+	end)
+	if not ok then
+		warn("[LiquidFX] Erro ao executar o script remoto:", err)
+	end
+end)
+
+--------------------------------------------------------------------
+-- LIMPEZA
+--------------------------------------------------------------------
+env.__LiquidFXCleanup = function()
+	token += 1
+	holding = false
+	heartbeat:Disconnect()
+	for _, c in ipairs(conns) do
+		c:Disconnect()
+	end
+	folder:Destroy()
+	env.__LiquidFXCleanup = nil
+end
+
+print("[LiquidFX] Carregado! Item do slot " .. CONFIG.Slot
+	.. " equipado por " .. CONFIG.ActivationDelay .. "s joga o líquido automaticamente.")
